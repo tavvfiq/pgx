@@ -3,9 +3,9 @@ package pgproto3_test
 import (
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/yugabyte/pgx/v5/pgproto3"
 )
 
 func TestEncodeDecode(t *testing.T) {

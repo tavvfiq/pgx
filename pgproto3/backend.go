@@ -70,7 +70,6 @@ func (b *Backend) Send(msg BackendMessage) {
 		return
 	}
 	b.wbuf = newBuf
-
 	if b.tracer != nil {
 		b.tracer.traceMessage('B', int32(len(b.wbuf)-prevLen), msg)
 	}

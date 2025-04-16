@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"testing"
 
-	pgx "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
+	pgx "github.com/yugabyte/pgx/v5"
+	"github.com/yugabyte/pgx/v5/pgtype"
 )
 
 func TestCompositeCodecTranscode(t *testing.T) {
+	skipCockroachDB(t, "Server does not support composite types (see https://github.com/cockroachdb/cockroach/issues/27792)")
+
 	defaultConnTestRunner.RunTest(context.Background(), t, func(ctx context.Context, t testing.TB, conn *pgx.Conn) {
 
 		_, err := conn.Exec(ctx, `drop type if exists ct_test;

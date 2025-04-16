@@ -19,8 +19,8 @@ import (
 
 	"github.com/jackc/pgpassfile"
 	"github.com/jackc/pgservicefile"
-	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
-	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/yugabyte/pgx/v5/pgconn/ctxwatch"
+	"github.com/yugabyte/pgx/v5/pgproto3"
 )
 
 type AfterConnectFunc func(ctx context.Context, pgconn *PgConn) error
@@ -833,7 +833,6 @@ func parsePort(s string) (uint16, error) {
 }
 
 func makeDefaultDialer() *net.Dialer {
-	// rely on GOLANG KeepAlive settings
 	return &net.Dialer{}
 }
 

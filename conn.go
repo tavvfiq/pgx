@@ -11,10 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/internal/sanitize"
-	"github.com/jackc/pgx/v5/internal/stmtcache"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/yugabyte/pgx/v5/internal/anynil"
+	"github.com/yugabyte/pgx/v5/internal/sanitize"
+	"github.com/yugabyte/pgx/v5/internal/stmtcache"
+	"github.com/yugabyte/pgx/v5/pgconn"
+	"github.com/yugabyte/pgx/v5/pgtype"
 )
 
 // ConnConfig contains all the options used to establish a connection. It must be created by ParseConfig and
@@ -25,7 +26,8 @@ type ConnConfig struct {
 	Tracer QueryTracer
 
 	// Original connection string that was parsed into config.
-	connString string
+	connString  string
+	controlHost string
 
 	// StatementCacheCapacity is maximum size of the statement cache used when executing a query with "cache_statement"
 	// query exec mode.
@@ -42,6 +44,12 @@ type ConnConfig struct {
 	DefaultQueryExecMode QueryExecMode
 
 	createdByParseConfig bool // Used to enforce created by ParseConfig rule.
+
+	loadBalance                  string
+	topologyKeys                 map[int][]string
+	refreshInterval              int64
+	fallbackToTopologyKeysOnly   bool
+	failedHostReconnectDelaySecs int64
 }
 
 // ParseConfigOptions contains options that control how a config is built such as getsslpassword.
@@ -85,6 +93,8 @@ type Conn struct {
 
 	wbuf []byte
 	eqb  ExtendedQueryBuilder
+
+	closeCntUpdated bool
 }
 
 // Identifier a PostgreSQL identifier or name. Identifiers can be composed of
@@ -136,7 +146,11 @@ func Connect(ctx context.Context, connString string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return connect(ctx, connConfig)
+	if connConfig.loadBalance != "false" {
+		return connectLoadBalanced(ctx, connConfig)
+	} else {
+		return connect(ctx, connConfig)
+	}
 }
 
 // ConnectWithOptions behaves exactly like Connect with the addition of options. At the present options is only used to
@@ -146,7 +160,11 @@ func ConnectWithOptions(ctx context.Context, connString string, options ParseCon
 	if err != nil {
 		return nil, err
 	}
-	return connect(ctx, connConfig)
+	if connConfig.loadBalance != "false" {
+		return connectLoadBalanced(ctx, connConfig)
+	} else {
+		return connect(ctx, connConfig)
+	}
 }
 
 // ConnectConfig establishes a connection with a PostgreSQL server with a configuration struct.
@@ -156,7 +174,11 @@ func ConnectConfig(ctx context.Context, connConfig *ConnConfig) (*Conn, error) {
 	// connections with the same config. See https://github.com/jackc/pgx/issues/618.
 	connConfig = connConfig.Copy()
 
-	return connect(ctx, connConfig)
+	if connConfig.loadBalance != "false" {
+		return connectLoadBalanced(ctx, connConfig)
+	} else {
+		return connect(ctx, connConfig)
+	}
 }
 
 // ParseConfigWithOptions behaves exactly as ParseConfig does with the addition of options. At the present options is
@@ -206,13 +228,86 @@ func ParseConfigWithOptions(connString string, options ParseConfigOptions) (*Con
 		}
 	}
 
+	var loadBalance string = "false"
+	if s, ok := config.RuntimeParams["load_balance"]; ok {
+		delete(config.RuntimeParams, "load_balance")
+		if validateLoadBalance(s) {
+			loadBalance = s
+		} else {
+			return nil, fmt.Errorf("invalid load_balance value: Valid values are only-rr, only-primary, prefer-rr, prefer-primary, any or true")
+		}
+	}
+
+	var topologyKeys map[int][]string = nil
+	if s, ok := config.RuntimeParams["topology_keys"]; ok {
+		delete(config.RuntimeParams, "topology_keys")
+		if tkeys, err := validateTopologyKeys(s); err == nil {
+			topologyKeys = make(map[int][]string)
+			for _, tk := range tkeys {
+				zones := strings.Split(tk, ":")
+				if len(zones) == 1 {
+					topologyKeys[0] = append(topologyKeys[0], zones[0])
+				} else {
+					num, err := strconv.Atoi(zones[1])
+					if err != nil || num < 1 || num > MAX_PREFERENCE_VALUE {
+						str := "Invalid preference value for " + zones[0] + ": " + zones[1]
+						return nil, fmt.Errorf(str)
+					}
+					topologyKeys[num-1] = append(topologyKeys[num-1], zones[0])
+				}
+			}
+		} else {
+			return nil, err
+		}
+	}
+
+	refreshInterval := int64(REFRESH_INTERVAL_SECONDS)
+	if s, ok := config.RuntimeParams["yb_servers_refresh_interval"]; ok {
+		delete(config.RuntimeParams, "yb_servers_refresh_interval")
+		if refresh, err := strconv.Atoi(s); err == nil {
+			if refresh >= 0 && refresh <= MAX_INTERVAL_SECONDS {
+				refreshInterval = int64(refresh)
+			}
+		} else {
+			return nil, fmt.Errorf("invalid refresh_interval: %v", err)
+		}
+	}
+
+	fallbackToTopologyKeysOnly := false
+	if s, ok := config.RuntimeParams["fallback_to_topology_keys_only"]; ok {
+		delete(config.RuntimeParams, "fallback_to_topology_keys_only")
+		if b, err := strconv.ParseBool(s); err == nil {
+			fallbackToTopologyKeysOnly = b
+		} else {
+			return nil, fmt.Errorf("invalid fallback_to_topology_keys_only: %v", err)
+		}
+	}
+
+	failedHostReconnectDelaySecs := int64(DEFAULT_FAILED_HOST_RECONNECT_DELAY_SECS)
+	if s, ok := config.RuntimeParams["failed_host_reconnect_delay_secs"]; ok {
+		delete(config.RuntimeParams, "failed_host_reconnect_delay_secs")
+		if reconnect, err := strconv.Atoi(s); err == nil {
+			if reconnect >= 0 && reconnect <= MAX_FAILED_HOST_RECONNECT_DELAY_SECS {
+				failedHostReconnectDelaySecs = int64(reconnect)
+			}
+		} else {
+			return nil, fmt.Errorf("invalid failed_host_reconnect_delay_secs: %v", err)
+		}
+	}
+
 	connConfig := &ConnConfig{
-		Config:                   *config,
-		createdByParseConfig:     true,
-		StatementCacheCapacity:   statementCacheCapacity,
-		DescriptionCacheCapacity: descriptionCacheCapacity,
-		DefaultQueryExecMode:     defaultQueryExecMode,
-		connString:               connString,
+		Config:                       *config,
+		createdByParseConfig:         true,
+		StatementCacheCapacity:       statementCacheCapacity,
+		DescriptionCacheCapacity:     descriptionCacheCapacity,
+		DefaultQueryExecMode:         defaultQueryExecMode,
+		connString:                   connString,
+		controlHost:                  config.Host,
+		loadBalance:                  loadBalance,
+		topologyKeys:                 topologyKeys,
+		refreshInterval:              refreshInterval,
+		fallbackToTopologyKeysOnly:   fallbackToTopologyKeysOnly,
+		failedHostReconnectDelaySecs: failedHostReconnectDelaySecs,
 	}
 
 	return connConfig, nil
@@ -232,6 +327,12 @@ func ParseConfigWithOptions(connString string, options ParseConfigOptions) (*Con
 //   - description_cache_capacity.
 //     The maximum size of the description cache used when executing a query with "cache_describe" query exec mode.
 //     Default: 512.
+//
+//   - load_balance
+//      Possible values: "true" and "false". Default: false
+//   - topology_keys
+//      YugabyteDB placement information in the format "cloudname.regionname.zonename". Default: empty
+
 func ParseConfig(connString string) (*ConnConfig, error) {
 	return ParseConfigWithOptions(connString, ParseConfigOptions{})
 }
@@ -297,10 +398,19 @@ func connect(ctx context.Context, config *ConnConfig) (c *Conn, err error) {
 // connection.
 func (c *Conn) Close(ctx context.Context) error {
 	if c.IsClosed() {
+		if !c.closeCntUpdated && c.config.loadBalance != "false" {
+			c.closeCntUpdated = true
+			decrementConnCount(c.config.controlHost + "," + c.config.Host)
+		}
 		return nil
 	}
 
 	err := c.pgConn.Close(ctx)
+
+	if !c.closeCntUpdated && c.config.loadBalance != "false" {
+		c.closeCntUpdated = true
+		decrementConnCount(c.config.controlHost + "," + c.config.Host)
+	}
 	return err
 }
 
@@ -588,6 +698,14 @@ func (c *Conn) execPrepared(ctx context.Context, sd *pgconn.StatementDescription
 	return result.CommandTag, result.Err
 }
 
+type unknownArgumentTypeQueryExecModeExecError struct {
+	arg any
+}
+
+func (e *unknownArgumentTypeQueryExecModeExecError) Error() string {
+	return fmt.Sprintf("cannot use unregistered type %T as query argument in QueryExecModeExec", e.arg)
+}
+
 func (c *Conn) execSQLParams(ctx context.Context, sql string, args []any) (pgconn.CommandTag, error) {
 	err := c.eqb.Build(c.typeMap, nil, args)
 	if err != nil {
@@ -777,6 +895,7 @@ optionLoop:
 	}
 
 	c.eqb.reset()
+	anynil.NormalizeSlice(args)
 	rows := c.getRows(ctx, sql, args)
 
 	var err error

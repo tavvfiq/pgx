@@ -1,5 +1,93 @@
-[![Go Reference](https://pkg.go.dev/badge/github.com/jackc/pgx/v5.svg)](https://pkg.go.dev/github.com/jackc/pgx/v5)
-[![Build Status](https://github.com/jackc/pgx/actions/workflows/ci.yml/badge.svg)](https://github.com/jackc/pgx/actions/workflows/ci.yml)
+
+# YugabyteDB Go Driver
+This is a Go Driver based on [jackc/pgx](https://github.com/jackc/pgx), with following additional feature:
+
+## Connection load balancing
+
+Users can use this feature in two configurations.
+
+### Cluster-aware / Uniform connection load balancing
+
+In the cluster-aware connection load balancing, connections are distributed across all the tservers in the cluster, irrespective of their placements.
+
+To enable the cluster-aware connection load balancing, provide the parameter `load_balance` with value as either `true` or `any` in the connection url or the connection string (DSN style). [This section](#read-replica-cluster) explains the different values for `load_balance` parameter.
+
+```
+"postgres://username:password@localhost:5433/database_name?load_balance=true"
+```
+
+With this parameter specified in the url, the driver will fetch and maintain the list of tservers from the given endpoint (`localhost` in above example) available in the YugabyteDB cluster and distribute the connections equally across them.
+
+This list is refreshed every 5 minutes, when a new connection request is received.
+
+Application needs to use the same connection url to create every connection it needs, so that the distribution happens equally.
+
+### Topology-aware connection load balancing
+
+With topology-aware connnection load balancing, users can target tservers in specific zones by specifying these zones as `topology_keys` with values in the format `cloudname.regionname.zonename`. Multiple zones can be specified as comma separated values.
+
+The connections will be distributed equally with the tservers in these zones.
+
+Note that, you would still need to specify `load_balance` to one of the 5 allowed values to enable the topology-aware connection load balancing.
+
+```
+"postgres://username:password@localhost:5433/database_name?load_balance=true&topology_keys=cloud1.region1.zone1,cloud1.region1.zone2"
+```
+### Specifying fallback zones
+
+For topology-aware load balancing, you can now specify fallback placements too. This is not applicable for cluster-aware load balancing.
+Each placement value can be suffixed with a colon (`:`) followed by a preference value between 1 and 10.
+A preference value of `:1` means it is a primary placement. A preference value of `:2` means it is the first fallback placement and so on.If no preference value is provided, it is considered to be a primary placement (equivalent to one with preference value `:1`). Example given below.
+
+```
+"postgres://username:password@localhost:5433/database_name?load_balance=any&topology_keys=cloud1.region1.zone1:1,cloud1.region1.zone2:2";
+```
+
+You can also use `*` for specifying all the zones in a given region as shown below. This is not allowed for cloud or region values.
+
+```
+"postgres://username:password@localhost:5433/database_name?load_balance=any&topology_keys=cloud1.region1.*:1,cloud1.region2.*:2";
+```
+
+The driver attempts to connect to a node in following order: the least loaded node in the 1) primary placement(s), else in the 2) first fallback if specified, else in the 3) second fallback if specified and so on.
+If no nodes are available either in primary placement(s) or in any of the fallback placements, then nodes in the rest of the cluster are attempted.
+And this repeats for each connection request.
+
+## Specifying Refresh Interval
+
+Users can specify Refresh Time Interval, in seconds. It is the time interval between two attempts to refresh the information about cluster nodes. Default is 300. Valid values are integers between 0 and 600. Value 0 means refresh for each connection request. Any value outside this range is ignored and the default is used.
+
+To specify Refresh Interval, use the parameter `yb_servers_refresh_interval` in the connection url or the connection string.
+
+```
+"postgres://username:password@localhost:5433/database_name?yb_servers_refresh_interval=X&load_balance=true&topology_keys=cloud1.region1.*:1,cloud1.region2.*:2";
+```
+
+Same parameters can be specified in the connection url while using the `pgxpool.Connect()` API.
+
+## Other Connection Parameters:
+
+### fallback_to_topology_keys_only
+Applicable only for TopologyAware Load Balancing. When set to true, the smart driver does not attempt to connect to servers outside of primary and fallback placements specified via property. The default behaviour is to fallback to any available server in the entire cluster.(default value: false)
+
+### failed_host_reconnect_delay_secs
+The driver marks a server as failed with a timestamp, when it cannot connect to it. Later, whenever it refreshes the server list via yb_servers(), if it sees the failed server in the response, it marks the server as UP only if failed-host-reconnect-delay-secs time has elapsed. (The yb_servers() function does not remove a failed server immediately from its result and retains it for a while.)(default value: 5 seconds)
+
+## Read Replica Cluster
+
+PGX smart driver also enables load balancing across nodes in primary clusters which have associated Read Replica cluster.
+
+The connection property `load-balance` allows five values using which users can distribute connections among different combination of nodes as per their requirements:
+
+- `only-rr` - Create connections only on Read Replica nodes
+- `only-primary` - Create connections only on primary cluster nodes
+- `prefer-rr` - Create connections on Read Replica nodes. If none available, on any node in the cluster including primary cluster nodes
+- `prefer-primary` - Create connections on primary cluster nodes. If none available, on any node in the cluster including Read Replica nodes
+- `any` or `true` - Equivalent to value true. Create connections on any node in the primary or Read Replica cluster
+
+default value is false
+
+Details about the upstream pgx driver - which hold true for this driver as well - are given below.
 
 # pgx - PostgreSQL Driver and Toolkit
 
@@ -22,11 +110,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/yugabyte/pgx/v5"
 )
 
 func main() {
-	// urlExample := "postgres://username:password@localhost:5432/database_name"
+	// urlExample := "postgres://username:password@localhost:5433/database_name"
 	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
@@ -104,7 +192,7 @@ pgx follows semantic versioning for the documented public API on stable releases
 
 pglogrepl provides functionality to act as a client for PostgreSQL logical replication.
 
-### [github.com/jackc/pgmock](https://github.com/jackc/pgmock)
+pgx supports the same versions of Go and PostgreSQL that are supported by their respective teams. For [Go](https://golang.org/doc/devel/release.html#policy) that is the two most recent major releases and for [PostgreSQL](https://www.postgresql.org/support/versioning/) the major releases in the last 5 years. This means pgx supports Go 1.16 and higher and PostgreSQL 10 and higher.
 
 pgmock offers the ability to create a server that mocks the PostgreSQL wire protocol. This is used internally to test pgx by purposely inducing unusual errors. pgproto3 and pgmock together provide most of the foundational tooling required to implement a PostgreSQL proxy or MitM (such as for a custom connection pooler).
 
@@ -127,6 +215,12 @@ pgerrcode contains constants for the PostgreSQL error codes.
 ## Adapters for 3rd Party Tracers
 
 * [github.com/jackhopner/pgx-xray-tracer](https://github.com/jackhopner/pgx-xray-tracer)
+### [github.com/yugabyte/pgx/v4/pgxpool](https://github.com/yugabyte/pgx/tree/master/pgxpool)
+
+
+### [github.com/yugabyte/pgx/v4/stdlib](https://github.com/yugabyte/pgx/tree/master/stdlib)
+
+* [https://github.com/jackhopner/pgx-xray-tracer](https://github.com/jackhopner/pgx-xray-tracer)
 
 ## Adapters for 3rd Party Loggers
 

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/pgxtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/yugabyte/pgx/v5"
+	"github.com/yugabyte/pgx/v5/pgxpool"
+	"github.com/yugabyte/pgx/v5/pgxtest"
 )
 
 func TestConnect(t *testing.T) {
@@ -87,7 +87,7 @@ func TestConnectConfigRequiresConnConfigFromParseConfig(t *testing.T) {
 }
 
 func TestConfigCopyReturnsEqualConfig(t *testing.T) {
-	connString := "postgres://jack:secret@localhost:5432/mydb?application_name=pgxtest&search_path=myschema&connect_timeout=5"
+	connString := "postgres://jack:secret@localhost:5433/mydb?application_name=pgxtest&search_path=myschema&connect_timeout=5"
 	original, err := pgxpool.ParseConfig(connString)
 	require.NoError(t, err)
 

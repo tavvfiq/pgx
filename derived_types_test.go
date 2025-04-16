@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"github.com/yugabyte/pgx/v5"
 )
 
 func TestCompositeCodecTranscodeWithLoadTypes(t *testing.T) {
