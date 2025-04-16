@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/stretchr/testify/require"
+	"github.com/yugabyte/pgx/v5/pgconn/ctxwatch"
 )
 
 type testHandler struct {
