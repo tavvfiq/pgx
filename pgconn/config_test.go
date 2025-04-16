@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -336,7 +337,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN everything",
+			name:       "Key/value everything",
 			connString: "user=jack password=secret host=localhost port=5432 dbname=mydb sslmode=disable application_name=pgxtest search_path=myschema connect_timeout=5",
 			config: &pgconn.Config{
 				User:           "jack",
@@ -353,7 +354,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN with escaped single quote",
+			name:       "Key/value with escaped single quote",
 			connString: "user=jack\\'s password=secret host=localhost port=5432 dbname=mydb sslmode=disable",
 			config: &pgconn.Config{
 				User:          "jack's",
@@ -366,7 +367,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN with escaped backslash",
+			name:       "Key/value with escaped backslash",
 			connString: "user=jack password=sooper\\\\secret host=localhost port=5432 dbname=mydb sslmode=disable",
 			config: &pgconn.Config{
 				User:          "jack",
@@ -379,7 +380,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN with single quoted values",
+			name:       "Key/value with single quoted values",
 			connString: "user='jack' host='localhost' dbname='mydb' sslmode='disable'",
 			config: &pgconn.Config{
 				User:          "jack",
@@ -391,7 +392,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN with single quoted value with escaped single quote",
+			name:       "Key/value with single quoted value with escaped single quote",
 			connString: "user='jack\\'s' host='localhost' dbname='mydb' sslmode='disable'",
 			config: &pgconn.Config{
 				User:          "jack's",
@@ -403,7 +404,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN with empty single quoted value",
+			name:       "Key/value with empty single quoted value",
 			connString: "user='jack' password='' host='localhost' dbname='mydb' sslmode='disable'",
 			config: &pgconn.Config{
 				User:          "jack",
@@ -415,7 +416,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN with space between key and value",
+			name:       "Key/value with space between key and value",
 			connString: "user = 'jack' password = '' host = 'localhost' dbname = 'mydb' sslmode='disable'",
 			config: &pgconn.Config{
 				User:          "jack",
@@ -491,7 +492,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN multiple hosts one port",
+			name:       "Key/value multiple hosts one port",
 			connString: "user=jack password=secret host=foo,bar,baz port=5432 dbname=mydb sslmode=disable",
 			config: &pgconn.Config{
 				User:          "jack",
@@ -516,7 +517,7 @@ func TestParseConfig(t *testing.T) {
 			},
 		},
 		{
-			name:       "DSN multiple hosts multiple ports",
+			name:       "Key/value multiple hosts multiple ports",
 			connString: "user=jack password=secret host=foo,bar,baz port=1,2,3 dbname=mydb sslmode=disable",
 			config: &pgconn.Config{
 				User:          "jack",
@@ -772,18 +773,18 @@ func TestParseConfig(t *testing.T) {
 }
 
 // https://github.com/jackc/pgconn/issues/47
-func TestParseConfigDSNWithTrailingEmptyEqualDoesNotPanic(t *testing.T) {
+func TestParseConfigKVWithTrailingEmptyEqualDoesNotPanic(t *testing.T) {
 	_, err := pgconn.ParseConfig("host= user= password= port= database=")
 	require.NoError(t, err)
 }
 
-func TestParseConfigDSNLeadingEqual(t *testing.T) {
+func TestParseConfigKVLeadingEqual(t *testing.T) {
 	_, err := pgconn.ParseConfig("= user=jack")
 	require.Error(t, err)
 }
 
 // https://github.com/jackc/pgconn/issues/49
-func TestParseConfigDSNTrailingBackslash(t *testing.T) {
+func TestParseConfigKVTrailingBackslash(t *testing.T) {
 	_, err := pgconn.ParseConfig(`x=x\`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid backslash")
@@ -933,19 +934,6 @@ func TestParseConfigEnvLibpq(t *testing.T) {
 
 	pgEnvvars := []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGAPPNAME", "PGSSLMODE", "PGCONNECT_TIMEOUT", "PGSSLSNI"}
 
-	savedEnv := make(map[string]string)
-	for _, n := range pgEnvvars {
-		savedEnv[n] = os.Getenv(n)
-	}
-	defer func() {
-		for k, v := range savedEnv {
-			err := os.Setenv(k, v)
-			if err != nil {
-				t.Fatalf("Unable to restore environment: %v", err)
-			}
-		}
-	}()
-
 	tests := []struct {
 		name    string
 		envvars map[string]string
@@ -1015,14 +1003,8 @@ func TestParseConfigEnvLibpq(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		for _, n := range pgEnvvars {
-			err := os.Unsetenv(n)
-			require.NoError(t, err)
-		}
-
-		for k, v := range tt.envvars {
-			err := os.Setenv(k, v)
-			require.NoError(t, err)
+		for _, env := range pgEnvvars {
+			t.Setenv(env, tt.envvars[env])
 		}
 
 		config, err := pgconn.ParseConfig("")
@@ -1038,16 +1020,11 @@ func TestParseConfigReadsPgPassfile(t *testing.T) {
 	skipOnWindows(t)
 	t.Parallel()
 
-	tf, err := os.CreateTemp("", "")
+	tfName := filepath.Join(t.TempDir(), "config")
+	err := os.WriteFile(tfName, []byte("test1:5432:curlydb:curly:nyuknyuknyuk"), 0600)
 	require.NoError(t, err)
 
-	defer tf.Close()
-	defer os.Remove(tf.Name())
-
-	_, err = tf.Write([]byte("test1:5432:curlydb:curly:nyuknyuknyuk"))
-	require.NoError(t, err)
-
-	connString := fmt.Sprintf("postgres://curly@test1:5432/curlydb?sslmode=disable&passfile=%s", tf.Name())
+	connString := fmt.Sprintf("postgres://curly@test1:5432/curlydb?sslmode=disable&passfile=%s", tfName)
 	expected := &pgconn.Config{
 		User:          "curly",
 		Password:      "nyuknyuknyuk",
@@ -1068,13 +1045,9 @@ func TestParseConfigReadsPgServiceFile(t *testing.T) {
 	skipOnWindows(t)
 	t.Parallel()
 
-	tf, err := os.CreateTemp("", "")
-	require.NoError(t, err)
+	tfName := filepath.Join(t.TempDir(), "config")
 
-	defer tf.Close()
-	defer os.Remove(tf.Name())
-
-	_, err = tf.Write([]byte(`
+	err := os.WriteFile(tfName, []byte(`
 [abc]
 host=abc.example.com
 port=9999
@@ -1086,7 +1059,7 @@ host = def.example.com
 dbname = defdb
 user = defuser
 application_name = spaced string
-`))
+`), 0600)
 	require.NoError(t, err)
 
 	defaultPort := getDefaultPort(t)
@@ -1098,7 +1071,7 @@ application_name = spaced string
 	}{
 		{
 			name:       "abc",
-			connString: fmt.Sprintf("postgres:///?servicefile=%s&service=%s", tf.Name(), "abc"),
+			connString: fmt.Sprintf("postgres:///?servicefile=%s&service=%s", tfName, "abc"),
 			config: &pgconn.Config{
 				Host:     "abc.example.com",
 				Database: "abcdb",
@@ -1120,7 +1093,7 @@ application_name = spaced string
 		},
 		{
 			name:       "def",
-			connString: fmt.Sprintf("postgres:///?servicefile=%s&service=%s", tf.Name(), "def"),
+			connString: fmt.Sprintf("postgres:///?servicefile=%s&service=%s", tfName, "def"),
 			config: &pgconn.Config{
 				Host:     "def.example.com",
 				Port:     defaultPort,
@@ -1142,7 +1115,7 @@ application_name = spaced string
 		},
 		{
 			name:       "conn string has precedence",
-			connString: fmt.Sprintf("postgres://other.example.com:7777/?servicefile=%s&service=%s&sslmode=disable", tf.Name(), "abc"),
+			connString: fmt.Sprintf("postgres://other.example.com:7777/?servicefile=%s&service=%s&sslmode=disable", tfName, "abc"),
 			config: &pgconn.Config{
 				Host:          "other.example.com",
 				Database:      "abcdb",

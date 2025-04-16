@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/yugabyte/pgx/v5/pgconn"
 	"github.com/yugabyte/pgx/v5/pgproto3"
-	"github.com/stretchr/testify/require"
 )
 
 func TestTrace(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"testing"
@@ -35,6 +36,7 @@ func init() {
 // Test for renamed types
 type _string string
 type _bool bool
+type _uint8 uint8
 type _int8 int8
 type _int16 int16
 type _int16Slice []int16
@@ -308,7 +310,7 @@ func TestPointerPointerStructScan(t *testing.T) {
 	plan := m.PlanScan(pgt.OID, pgtype.TextFormatCode, &c)
 	err := plan.Scan([]byte("(1)"), &c)
 	require.NoError(t, err)
-	require.Equal(t, c.ID, 1)
+	require.Equal(t, 1, c.ID)
 }
 
 // https://github.com/jackc/pgx/issues/1263
@@ -453,6 +455,14 @@ func TestMapScanNullToWrongType(t *testing.T) {
 	assert.False(t, pn.Valid)
 }
 
+func TestScanToSliceOfRenamedUint8(t *testing.T) {
+	m := pgtype.NewMap()
+	var ruint8 []_uint8
+	err := m.Scan(pgtype.Int2ArrayOID, pgx.TextFormatCode, []byte("{2,4}"), &ruint8)
+	assert.NoError(t, err)
+	assert.Equal(t, []_uint8{2, 4}, ruint8)
+}
+
 func TestMapScanTextToBool(t *testing.T) {
 	tests := []struct {
 		name string
@@ -537,6 +547,14 @@ func TestMapEncodePlanCacheUUIDTypeConfusion(t *testing.T) {
 	require.Error(t, err)
 }
 
+// https://github.com/jackc/pgx/issues/1763
+func TestMapEncodeRawJSONIntoUnknownOID(t *testing.T) {
+	m := pgtype.NewMap()
+	buf, err := m.Encode(0, pgtype.TextFormatCode, json.RawMessage(`{"foo": "bar"}`), nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte(`{"foo": "bar"}`), buf)
+}
+
 func BenchmarkMapScanInt4IntoBinaryDecoder(b *testing.B) {
 	m := pgtype.NewMap()
 	src := []byte{0, 0, 0, 42}
@@ -612,5 +630,12 @@ func BenchmarkScanPlanScanInt4IntoGoInt32(b *testing.B) {
 func isExpectedEq(a any) func(any) bool {
 	return func(v any) bool {
 		return a == v
+	}
+}
+
+func isPtrExpectedEq(a any) func(any) bool {
+	return func(v any) bool {
+		val := reflect.ValueOf(v)
+		return a == val.Elem().Interface()
 	}
 }
